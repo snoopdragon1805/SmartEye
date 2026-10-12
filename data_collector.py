@@ -28,7 +28,7 @@ SESSION_ID = time.strftime(
     "S_%Y%m%d_%H%M%S"
 )
 
-DATASET_PATH = "dataset/fatigue_data.csv"
+DATASET_PATH = "dataset/fatigue_data_v2.csv"
 
 
 def euclidean_distance(point1, point2):
@@ -65,16 +65,18 @@ def save_features(features, fatigue_label):
     file_exists = os.path.exists(DATASET_PATH)
 
     fieldnames = [
-        "participant_id",
-        "session_id",
-        "window_id",
-        "mean_ear",
-        "min_ear",
-        "blink_rate",
-        "mean_blink_duration",
-        "max_blink_duration",
-        "perclos",
-        "fatigue_label"
+    "participant_id",
+    "session_id",
+    "window_id",
+    "mean_ear",
+    "min_ear",
+    "ear_std",
+    "ear_range",
+    "blink_rate",
+    "mean_blink_duration",
+    "max_blink_duration",
+    "perclos",
+    "fatigue_label"
     ]
 
     with open(
