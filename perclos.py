@@ -45,31 +45,99 @@ def calculate_ear(eye_points):
     return (vertical_1 + vertical_2) / (2.0 * horizontal)
 
 
-def calculate_perclos(history):
+class PERCLOSCalculator:
 
-    if len(history) < 2:
-        return 0.0, 0.0
+    def __init__(
+        self,
+        ear_threshold=EAR_THRESHOLD,
+        window_duration=WINDOW_DURATION
+    ):
 
-    total_time = history[-1][0] - history[0][0]
+        self.ear_threshold = ear_threshold
+        self.window_duration = window_duration
 
-    if total_time <= 0:
-        return 0.0, 0.0
+        # Stores:
+        # (timestamp, EAR)
+        self.history = deque()
 
-    closed_time = 0.0
 
-    for i in range(len(history) - 1):
+    def update(self, timestamp, ear):
 
-        current_timestamp, current_ear = history[i]
-        next_timestamp, _ = history[i + 1]
+        # Add current observation
+        self.history.append(
+            (timestamp, ear)
+        )
 
-        interval = next_timestamp - current_timestamp
+        # Remove observations older than
+        # the rolling window
+        cutoff_time = (
+            timestamp - self.window_duration
+        )
 
-        if current_ear < EAR_THRESHOLD:
-            closed_time += interval
+        while (
+            self.history
+            and self.history[0][0] < cutoff_time
+        ):
+            self.history.popleft()
 
-    perclos = (closed_time / total_time) * 100.0
 
-    return perclos, total_time
+    def calculate(self):
+
+        if len(self.history) < 2:
+            return 0.0, 0.0
+
+        total_time = (
+            self.history[-1][0]
+            - self.history[0][0]
+        )
+
+        if total_time <= 0:
+            return 0.0, 0.0
+
+        closed_time = 0.0
+
+        for i in range(len(self.history) - 1):
+
+            current_timestamp, current_ear = (
+                self.history[i]
+            )
+
+            next_timestamp, _ = (
+                self.history[i + 1]
+            )
+
+            interval = (
+                next_timestamp
+                - current_timestamp
+            )
+
+            if current_ear < self.ear_threshold:
+
+                closed_time += interval
+
+
+        perclos = (
+            closed_time
+            / total_time
+        ) * 100.0
+
+        return perclos, total_time
+
+
+    def get_observation_time(self):
+
+        if len(self.history) < 2:
+            return 0.0
+
+        return (
+            self.history[-1][0]
+            - self.history[0][0]
+        )
+
+
+    def reset_window(self):
+
+        self.history.clear()
 
 
 # --------------------------------------------------
@@ -104,15 +172,20 @@ if not cap.isOpened():
     print("Error: Could not open webcam.")
     exit()
 
+
 frame_timestamp_ms = 0
 
-# Stores:
-# (timestamp, EAR)
-history = deque()
+# Create PERCLOS calculator
+perclos_tracker = PERCLOSCalculator()
+
 
 print("PERCLOS detection started.")
 print("Press 'q' to quit.")
 
+
+# --------------------------------------------------
+# Main loop
+# --------------------------------------------------
 
 while True:
 
@@ -122,7 +195,9 @@ while True:
         print("Error: Could not read frame.")
         break
 
+
     current_time = time.time()
+
 
     rgb_frame = cv2.cvtColor(
         frame,
@@ -133,6 +208,7 @@ while True:
         image_format=mp.ImageFormat.SRGB,
         data=rgb_frame
     )
+
 
     result = landmarker.detect_for_video(
         mp_image,
@@ -152,7 +228,10 @@ while True:
         right_eye_points = []
 
 
+        # --------------------------------
         # Left eye
+        # --------------------------------
+
         for index in LEFT_EYE:
 
             landmark = face[index]
@@ -163,7 +242,10 @@ while True:
             left_eye_points.append((x, y))
 
 
+        # --------------------------------
         # Right eye
+        # --------------------------------
+
         for index in RIGHT_EYE:
 
             landmark = face[index]
@@ -174,39 +256,41 @@ while True:
             right_eye_points.append((x, y))
 
 
-        # Calculate EAR
-        left_ear = calculate_ear(left_eye_points)
-        right_ear = calculate_ear(right_eye_points)
+        # --------------------------------
+        # EAR
+        # --------------------------------
+
+        left_ear = calculate_ear(
+            left_eye_points
+        )
+
+        right_ear = calculate_ear(
+            right_eye_points
+        )
 
         average_ear = (
             left_ear + right_ear
         ) / 2.0
 
 
-        # Store timestamp + EAR
-        history.append(
-            (current_time, average_ear)
+        # --------------------------------
+        # Update PERCLOS
+        # --------------------------------
+
+        perclos_tracker.update(
+            current_time,
+            average_ear
         )
 
 
-        # Remove observations older than 60 seconds
-        cutoff_time = (
-            current_time - WINDOW_DURATION
-        )
-
-        while history and history[0][0] < cutoff_time:
-            history.popleft()
-
-
-        # Calculate PERCLOS
-        perclos, observation_time = calculate_perclos(
-            history
+        perclos, observation_time = (
+            perclos_tracker.calculate()
         )
 
 
-        # --------------------------------------------------
+        # --------------------------------
         # Eye state
-        # --------------------------------------------------
+        # --------------------------------
 
         if average_ear < EAR_THRESHOLD:
             eye_status = "CLOSED"
@@ -214,9 +298,9 @@ while True:
             eye_status = "OPEN"
 
 
-        # --------------------------------------------------
+        # --------------------------------
         # Draw landmarks
-        # --------------------------------------------------
+        # --------------------------------
 
         for point in left_eye_points:
 
@@ -240,9 +324,9 @@ while True:
             )
 
 
-        # --------------------------------------------------
+        # --------------------------------
         # Display EAR
-        # --------------------------------------------------
+        # --------------------------------
 
         cv2.putText(
             frame,
@@ -255,9 +339,9 @@ while True:
         )
 
 
-        # --------------------------------------------------
+        # --------------------------------
         # Display PERCLOS
-        # --------------------------------------------------
+        # --------------------------------
 
         if observation_time >= MIN_OBSERVATION_TIME:
 
@@ -289,9 +373,9 @@ while True:
             )
 
 
-        # --------------------------------------------------
+        # --------------------------------
         # Display eye state
-        # --------------------------------------------------
+        # --------------------------------
 
         cv2.putText(
             frame,
@@ -304,9 +388,9 @@ while True:
         )
 
 
-        # --------------------------------------------------
+        # --------------------------------
         # Display observation window
-        # --------------------------------------------------
+        # --------------------------------
 
         cv2.putText(
             frame,

@@ -42,7 +42,91 @@ def calculate_ear(eye_points):
     return (vertical_1 + vertical_2) / (2.0 * horizontal)
 
 
+class BlinkDetector:
+
+    def __init__(
+        self,
+        ear_threshold=EAR_THRESHOLD,
+        min_blink_duration=MIN_BLINK_DURATION,
+        max_blink_duration=MAX_BLINK_DURATION
+    ):
+
+        self.ear_threshold = ear_threshold
+        self.min_blink_duration = min_blink_duration
+        self.max_blink_duration = max_blink_duration
+
+        self.eyes_closed = False
+        self.eye_close_start = None
+
+        self.blink_count = 0
+        self.blink_durations = []
+
+
+    def update(self, ear):
+
+        current_time = time.time()
+
+        blink_detected = False
+
+
+        # Eyes are currently closed
+        if ear < self.ear_threshold:
+
+            # Eyes just became closed
+            if not self.eyes_closed:
+
+                self.eyes_closed = True
+                self.eye_close_start = current_time
+
+
+        # Eyes are currently open
+        else:
+
+            # Eyes just became open
+            if self.eyes_closed:
+
+                eye_close_duration = (
+                    current_time - self.eye_close_start
+                )
+
+                if (
+                    self.min_blink_duration
+                    <= eye_close_duration
+                    <= self.max_blink_duration
+                ):
+
+                    self.blink_count += 1
+                    self.blink_durations.append(
+                        eye_close_duration
+                    )
+
+                    blink_detected = True
+
+                self.eyes_closed = False
+                self.eye_close_start = None
+
+
+        return blink_detected
+
+
+    def get_statistics(self):
+
+        return {
+            "blink_count": self.blink_count,
+            "blink_durations": self.blink_durations.copy()
+        }
+
+
+    def reset_window(self):
+
+        self.blink_count = 0
+        self.blink_durations.clear()
+
+
+# --------------------------------
 # MediaPipe setup
+# --------------------------------
+
 base_options = python.BaseOptions(
     model_asset_path=MODEL_PATH
 )
@@ -56,10 +140,15 @@ options = vision.FaceLandmarkerOptions(
     min_tracking_confidence=0.5,
 )
 
-landmarker = vision.FaceLandmarker.create_from_options(options)
+landmarker = vision.FaceLandmarker.create_from_options(
+    options
+)
 
 
+# --------------------------------
 # Camera
+# --------------------------------
+
 cap = cv2.VideoCapture(0)
 
 if not cap.isOpened():
@@ -69,14 +158,17 @@ if not cap.isOpened():
 
 frame_timestamp_ms = 0
 
-# Blink state
-eyes_closed = False
-eye_close_start = None
-blink_count = 0
+# Create blink detector
+blink_detector = BlinkDetector()
+
 
 print("Blink detection started.")
 print("Press 'q' to quit.")
 
+
+# --------------------------------
+# Main loop
+# --------------------------------
 
 while True:
 
@@ -85,6 +177,7 @@ while True:
     if not ret:
         print("Error: Could not read frame.")
         break
+
 
     rgb_frame = cv2.cvtColor(
         frame,
@@ -95,6 +188,7 @@ while True:
         image_format=mp.ImageFormat.SRGB,
         data=rgb_frame
     )
+
 
     result = landmarker.detect_for_video(
         mp_image,
@@ -114,7 +208,10 @@ while True:
         right_eye_points = []
 
 
+        # --------------------------------
         # Left eye
+        # --------------------------------
+
         for index in LEFT_EYE:
 
             landmark = face[index]
@@ -125,7 +222,10 @@ while True:
             left_eye_points.append((x, y))
 
 
+        # --------------------------------
         # Right eye
+        # --------------------------------
+
         for index in RIGHT_EYE:
 
             landmark = face[index]
@@ -136,53 +236,34 @@ while True:
             right_eye_points.append((x, y))
 
 
+        # --------------------------------
         # EAR
-        left_ear = calculate_ear(left_eye_points)
-        right_ear = calculate_ear(right_eye_points)
+        # --------------------------------
 
-        average_ear = (left_ear + right_ear) / 2.0
+        left_ear = calculate_ear(
+            left_eye_points
+        )
 
+        right_ear = calculate_ear(
+            right_eye_points
+        )
 
-        # Current time
-        current_time = time.time()
+        average_ear = (
+            left_ear + right_ear
+        ) / 2.0
 
 
         # --------------------------------
-        # BLINK DETECTION
+        # Blink detection
         # --------------------------------
 
-        if average_ear < EAR_THRESHOLD:
-
-            # Eyes just became closed
-            if not eyes_closed:
-
-                eyes_closed = True
-                eye_close_start = current_time
-
-
-        else:
-
-            # Eyes just opened
-            if eyes_closed:
-
-                eye_close_duration = (
-                    current_time - eye_close_start
-                )
-
-                if (
-                    MIN_BLINK_DURATION
-                    <= eye_close_duration
-                    <= MAX_BLINK_DURATION
-                ):
-
-                    blink_count += 1
-
-                eyes_closed = False
-                eye_close_start = None
+        blink_detector.update(
+            average_ear
+        )
 
 
         # --------------------------------
-        # DISPLAY
+        # Display eye points
         # --------------------------------
 
         for point in left_eye_points:
@@ -195,6 +276,7 @@ while True:
                 -1
             )
 
+
         for point in right_eye_points:
 
             cv2.circle(
@@ -205,6 +287,12 @@ while True:
                 -1
             )
 
+
+        # --------------------------------
+        # Display statistics
+        # --------------------------------
+
+        stats = blink_detector.get_statistics()
 
         cv2.putText(
             frame,
@@ -219,7 +307,7 @@ while True:
 
         cv2.putText(
             frame,
-            f"Blinks: {blink_count}",
+            f"Blinks: {stats['blink_count']}",
             (30, 75),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.8,
@@ -228,7 +316,11 @@ while True:
         )
 
 
-        status = "CLOSED" if eyes_closed else "OPEN"
+        status = (
+            "CLOSED"
+            if blink_detector.eyes_closed
+            else "OPEN"
+        )
 
         cv2.putText(
             frame,
