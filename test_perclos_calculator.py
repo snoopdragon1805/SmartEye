@@ -1,17 +1,30 @@
+
 from perclos_calculator import PERCLOSCalculator
 
 
-tracker = PERCLOSCalculator()
+def run_test(name, ear_values, expected_perclos):
+    tracker = PERCLOSCalculator(max_valid_gap=0.20)
 
-# Simulated observations
-tracker.update(0.0, 0.26)
-tracker.update(1.0, 0.26)
-tracker.update(2.0, 0.10)
-tracker.update(3.0, 0.10)
-tracker.update(4.0, 0.26)
-tracker.update(5.0, 0.26)
+    for i, ear in enumerate(ear_values):
+        tracker.update(i * 0.1, ear)
 
-perclos, observation_time = tracker.calculate()
+    perclos, observation_time = tracker.calculate()
 
-print("PERCLOS:", perclos)
-print("Observation time:", observation_time)    
+    print(
+        f"{name}: PERCLOS={perclos:.2f}%, "
+        f"observed={observation_time:.2f}s"
+    )
+
+    assert abs(perclos - expected_perclos) < 0.01
+    assert observation_time > 0
+
+
+run_test("Eyes open", [0.26] * 11, 0.0)
+run_test("Eyes closed", [0.10] * 11, 100.0)
+run_test(
+    "Half open, half closed",
+    [0.26] * 5 + [0.10] * 6,
+    50.0
+)
+
+print("All PERCLOS tests passed!")

@@ -24,3 +24,12 @@ env/
 
 # MediaPipe model
 models/*.task
+
+# Personal calibration data
+models/user_profile.json
+
+# Local datasets and backups
+dataset/*_backup.csv
+dataset/*_pre_prediction_backup.csv
+data_collector_backup.py
+data_collector_before_*.py
