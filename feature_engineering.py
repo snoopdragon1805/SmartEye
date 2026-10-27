@@ -1,4 +1,6 @@
 
+import math
+
 import numpy as np
 
 
@@ -15,13 +17,38 @@ def calculate_features(
     if len(ear_values) == 0:
         return None
 
-    if window_duration <= 0:
+    if (
+        not isinstance(window_duration, (int, float))
+        or isinstance(window_duration, bool)
+        or not math.isfinite(window_duration)
+        or window_duration <= 0
+    ):
         raise ValueError("window_duration must be positive")
 
     ear_values = np.asarray(ear_values, dtype=float)
     blink_durations = np.asarray(
         blink_durations, dtype=float
     )
+
+    if (
+        not np.isfinite(ear_values).all()
+        or (ear_values <= 0).any()
+    ):
+        raise ValueError("EAR observations must be finite and positive.")
+    if (
+        not np.isfinite(blink_durations).all()
+        or (blink_durations < 0).any()
+    ):
+        raise ValueError(
+            "Blink durations must be finite and non-negative."
+        )
+    if (
+        not isinstance(perclos, (int, float))
+        or isinstance(perclos, bool)
+        or not math.isfinite(perclos)
+        or not 0 <= perclos <= 100
+    ):
+        raise ValueError("PERCLOS must be finite and between 0 and 100.")
 
     features = {
         "mean_ear": float(np.mean(ear_values)),

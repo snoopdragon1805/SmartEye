@@ -24,9 +24,8 @@ MODEL_PATH = "models/face_landmarker.task"
 LEFT_EYE = [362, 385, 387, 263, 373, 380]
 RIGHT_EYE = [33, 160, 158, 133, 153, 144]
 
-EAR_THRESHOLD = 0.20
-
 WINDOW_DURATION = 60.0
+MINIMUM_OBSERVATION_SECONDS = 10.0
 
 PARTICIPANT_ID = "P01"
 
@@ -44,6 +43,15 @@ def euclidean_distance(point1, point2):
 
 
 def calculate_ear(eye_points):
+    if len(eye_points) != 6:
+        return None
+
+    if any(
+        not math.isfinite(coordinate)
+        for point in eye_points
+        for coordinate in point
+    ):
+        return None
 
     p1, p2, p3, p4, p5, p6 = eye_points
 
@@ -52,13 +60,111 @@ def calculate_ear(eye_points):
 
     horizontal = euclidean_distance(p1, p4)
 
-    if horizontal == 0:
-        return 0.0
+    if horizontal <= 0:
+        return None
 
-    return (
+    ear = (
         vertical_1 + vertical_2
     ) / (2.0 * horizontal)
 
+    return ear if math.isfinite(ear) and ear > 0 else None
+
+
+def create_analysis_components(user_profile):
+    """Create all live analyzers from the loaded calibration profile."""
+    try:
+        ear_threshold = float(user_profile["ear_threshold"])
+    except (KeyError, TypeError, ValueError) as error:
+        raise ValueError(
+            "Calibration profile must contain a numeric ear_threshold."
+        ) from error
+
+    if not math.isfinite(ear_threshold) or not 0 < ear_threshold < 1:
+        raise ValueError(
+            "Calibration ear_threshold must be finite and between 0 and 1."
+        )
+
+    return (
+        ear_threshold,
+        BlinkDetector(ear_threshold=ear_threshold),
+        PERCLOSCalculator(
+            ear_threshold=ear_threshold,
+            window_duration=WINDOW_DURATION,
+        ),
+        TemporalAnalyzer(
+            window_duration=10.0,
+            ear_threshold=ear_threshold,
+            long_closure_duration=0.80,
+        ),
+    )
+
+
+def update_analysis(
+    ear,
+    current_time,
+    ear_values,
+    blink_detector,
+    perclos_tracker,
+    temporal_analyzer,
+    user_profile,
+):
+    """Update live analysis for one face measurement, or a missing sample."""
+    if (
+        ear is None
+        or not isinstance(ear, (int, float))
+        or isinstance(ear, bool)
+        or not math.isfinite(ear)
+        or ear <= 0
+    ):
+        blink_detector.reset_tracking()
+        temporal_analyzer.mark_unavailable(current_time)
+        perclos_tracker.update(current_time, None)
+        return None
+
+    ear_values.append(float(ear))
+    blink_detected = blink_detector.update(ear, current_time)
+    temporal_analyzer.update(
+        timestamp=current_time,
+        ear=ear,
+        blink_detected=blink_detected,
+    )
+    perclos_tracker.update(current_time, ear)
+
+    perclos, observation_time = perclos_tracker.calculate()
+    temporal_stats = temporal_analyzer.get_statistics(current_time)
+    blink_stats = blink_detector.get_statistics()
+
+    fatigue_result = None
+    fatigue_label = "Calibrating..."
+
+    if observation_time >= MINIMUM_OBSERVATION_SECONDS:
+        blink_durations = blink_stats["blink_durations"]
+        fatigue_result = calculate_fatigue_score(
+            current_ear=temporal_stats["mean_ear"],
+            current_blink_rate=temporal_stats["blink_rate"],
+            perclos=perclos,
+            current_closure_duration=temporal_stats[
+                "current_closure_duration"
+            ],
+            profile=user_profile,
+            recent_mean_blink_duration=(
+                sum(blink_durations) / len(blink_durations)
+                if blink_durations
+                else None
+            ),
+        )
+        fatigue_label = classify_fatigue(
+            fatigue_result["fatigue_score"]
+        )
+
+    return {
+        "perclos": perclos,
+        "observation_time": observation_time,
+        "temporal_stats": temporal_stats,
+        "blink_stats": blink_stats,
+        "fatigue_result": fatigue_result,
+        "fatigue_label": fatigue_label,
+    }
 
 
 def save_features(
@@ -68,10 +174,27 @@ def save_features(
     fatigue_score=None,
     predicted_status="Unavailable",
 ):
-    os.makedirs(
-        os.path.dirname(DATASET_PATH),
-        exist_ok=True
-    )
+    if fatigue_score is None:
+        if predicted_status != "Unavailable":
+            raise ValueError(
+                "A predicted status requires a fatigue score."
+            )
+    elif (
+        not isinstance(fatigue_score, (int, float))
+        or isinstance(fatigue_score, bool)
+        or not math.isfinite(fatigue_score)
+        or not 0 <= fatigue_score <= 1
+        or predicted_status not in {"Normal", "Moderate", "High"}
+        or predicted_status != classify_fatigue(fatigue_score)
+    ):
+        raise ValueError(
+            "A prediction requires a finite score in [0, 1] "
+            "and a valid predicted status."
+        )
+
+    dataset_directory = os.path.dirname(DATASET_PATH)
+    if dataset_directory:
+        os.makedirs(dataset_directory, exist_ok=True)
 
     fieldnames = [
         "participant_id",
@@ -109,8 +232,8 @@ def save_features(
         row = {
             "participant_id": PARTICIPANT_ID,
             "session_id": SESSION_ID,
-            "window_id": current_window_id,
             **features,
+            "window_id": current_window_id,
             "fatigue_label": fatigue_label,
             "fatigue_score": fatigue_score,
             "predicted_status": predicted_status,
@@ -125,6 +248,23 @@ def save_features(
 
 
 def main():
+    # Load calibration before creating any detector.
+    user_profile = load_profile("models/user_profile.json")
+    (
+        ear_threshold,
+        blink_detector,
+        perclos_tracker,
+        temporal_analyzer,
+    ) = create_analysis_components(user_profile)
+
+    print(f"Personalized EAR threshold: {ear_threshold:.4f}")
+    print("Personalised calibration profile loaded.")
+    print(f"Baseline EAR: {user_profile['baseline_ear']:.3f}")
+    print(
+        f"Baseline blink rate: "
+        f"{user_profile['baseline_blink_rate']:.1f}/min"
+    )
+
     # MediaPipe
     # --------------------------------------------------
 
@@ -153,38 +293,12 @@ def main():
     cap = cv2.VideoCapture(0)
 
     if not cap.isOpened():
-        print("Error: Could not open webcam.")
-        exit()
+        cap.release()
+        landmarker.close()
+        raise RuntimeError("Could not open webcam.")
 
 
     frame_timestamp_ms = 0
-
-    # --------------------------------------------------
-    # Detectors
-    # --------------------------------------------------
-
-    blink_detector = BlinkDetector(
-        ear_threshold=EAR_THRESHOLD
-    )
-
-    perclos_tracker = PERCLOSCalculator(
-        ear_threshold=EAR_THRESHOLD,
-        window_duration=WINDOW_DURATION
-    )
-
-    temporal_analyzer = TemporalAnalyzer(
-        window_duration=10.0,
-        ear_threshold=EAR_THRESHOLD,
-        long_closure_duration=0.80
-    )
-
-    # Load personalised calibration profile
-    user_profile = load_profile("models/user_profile.json")
-
-    print("Personalised calibration profile loaded.")
-    print(f"Baseline EAR: {user_profile['baseline_ear']:.3f}")
-    print(f"Baseline blink rate: {user_profile['baseline_blink_rate']:.1f}/min")
-
 
     # --------------------------------------------------
     # Feature collection state
@@ -194,7 +308,9 @@ def main():
 
     window_id = 1
 
-    window_start_time = time.time()
+    window_start_time = time.monotonic()
+    window_prediction_score = None
+    window_predicted_status = "Unavailable"
 
     print("SmartEye data collection started.")
     print("Collecting one feature window of 60 seconds.")
@@ -215,7 +331,7 @@ def main():
                 break
 
 
-            current_time = time.time()
+            current_time = time.monotonic()
 
 
             rgb_frame = cv2.cvtColor(
@@ -255,6 +371,10 @@ def main():
 
                     landmark = face[index]
 
+                    if not math.isfinite(landmark.x) or not math.isfinite(landmark.y):
+                        left_eye_points = []
+                        break
+
                     x = int(landmark.x * width)
                     y = int(landmark.y * height)
 
@@ -269,6 +389,10 @@ def main():
 
                     landmark = face[index]
 
+                    if not math.isfinite(landmark.x) or not math.isfinite(landmark.y):
+                        right_eye_points = []
+                        break
+
                     x = int(landmark.x * width)
                     y = int(landmark.y * height)
 
@@ -279,60 +403,21 @@ def main():
                 # EAR
                 # --------------------------------
 
-                left_ear = calculate_ear(
-                    left_eye_points
-                )
-
-                right_ear = calculate_ear(
-                    right_eye_points
-                )
-
+                left_ear = calculate_ear(left_eye_points)
+                right_ear = calculate_ear(right_eye_points)
                 average_ear = (
-                    left_ear + right_ear
-                ) / 2.0
-
-
-                # --------------------------------
-                # Store EAR
-                # --------------------------------
-
-                ear_values.append(
-                    average_ear
+                    (left_ear + right_ear) / 2.0
+                    if left_ear is not None and right_ear is not None
+                    else None
                 )
-
-
-                # --------------------------------
-                # Update blink detector
-                # --------------------------------
-
-                blink_detected = blink_detector.update(
+                analysis = update_analysis(
                     average_ear,
-                    current_time
-                )
-
-                temporal_analyzer.update(
-                    timestamp=current_time,
-                    ear=average_ear,
-                    blink_detected=blink_detected
-        )
-
-
-                # --------------------------------
-                # Update PERCLOS
-                # --------------------------------
-
-                perclos_tracker.update(
                     current_time,
-                    average_ear
-                )
-
-
-                # --------------------------------
-                # Current PERCLOS
-                # --------------------------------
-
-                perclos, observation_time = (
-                    perclos_tracker.calculate()
+                    ear_values,
+                    blink_detector,
+                    perclos_tracker,
+                    temporal_analyzer,
+                    user_profile,
                 )
 
 
@@ -362,88 +447,79 @@ def main():
                     )
 
 
-                cv2.putText(
-                    frame,
-                    f"EAR: {average_ear:.3f}",
-                    (30, 40),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.8,
-                    (0, 255, 0),
-                    2
-                )
-
-
                 stats = blink_detector.get_statistics()
-
-                cv2.putText(
-                    frame,
-                    f"Blinks: {stats['blink_count']}",
-                    (30, 75),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.8,
-                    (0, 255, 0),
-                    2
-                )
-
-
-                if observation_time >= 10.0:
-
-                    cv2.putText(
-                        frame,
-                        f"PERCLOS: {perclos:.2f}%",
-                        (30, 110),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        0.8,
-                        (0, 255, 0),
-                        2
-                    )
-
                 temporal_stats = temporal_analyzer.get_statistics(
                     current_time=current_time
                 )
-
-
-                # --------------------------------
-                # Live Fatigue Scoring
-                # --------------------------------
-
                 fatigue_result = None
-                fatigue_label = "Calibrating..."
+                fatigue_label = "Unavailable"
 
-                # Wait for enough valid observations before scoring.
-                if observation_time >= 10.0:
+                if analysis is not None:
+                    perclos = analysis["perclos"]
+                    observation_time = analysis["observation_time"]
+                    temporal_stats = analysis["temporal_stats"]
+                    stats = analysis["blink_stats"]
+                    fatigue_result = analysis["fatigue_result"]
+                    fatigue_label = analysis["fatigue_label"]
 
-                    fatigue_result = calculate_fatigue_score(
-                        current_ear=temporal_stats["mean_ear"],
-                        current_blink_rate=temporal_stats["blink_rate"],
-                        perclos=perclos,
-                        current_closure_duration=temporal_stats[
-                            "current_closure_duration"
-                        ],
-                        profile=user_profile,
-                        recent_mean_blink_duration=(
-                            sum(stats["blink_durations"]) / len(stats["blink_durations"])
-                            if stats["blink_durations"]
-                            else None
-                        ),
+                    cv2.putText(
+                        frame,
+                        f"EAR: {average_ear:.3f}",
+                        (30, 40),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.8,
+                        (0, 255, 0),
+                        2,
                     )
 
-                    fatigue_label = classify_fatigue(
-                        fatigue_result["fatigue_score"]
+                    cv2.putText(
+                        frame,
+                        f"Blinks: {stats['blink_count']}",
+                        (30, 75),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.8,
+                        (0, 255, 0),
+                        2,
                     )
 
-                    print(
-                        f"\rScore: {fatigue_result['fatigue_score']:.3f} | "
-                        f"EAR: {fatigue_result['components']['ear']:.3f} | "
-                        f"Blink: {fatigue_result['components']['blink_rate']:.3f} | "
-                        f"PERCLOS: {fatigue_result['components']['perclos']:.3f} | "
-                        f"Closure: {fatigue_result['components']['closure_duration']:.3f} | "
-                        f"Status: {fatigue_label}",
-                        end="",
-                        flush=True,
+                    if observation_time >= MINIMUM_OBSERVATION_SECONDS:
+                        cv2.putText(
+                            frame,
+                            f"PERCLOS: {perclos:.2f}%",
+                            (30, 110),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.8,
+                            (0, 255, 0),
+                            2,
+                        )
+
+                    if fatigue_result is not None:
+                        window_prediction_score = fatigue_result[
+                            "fatigue_score"
+                        ]
+                        window_predicted_status = fatigue_label
+                        print(
+                            f"\rScore: {window_prediction_score:.3f} | "
+                            f"EAR: {fatigue_result['components']['ear']:.3f} | "
+                            f"Blink: {fatigue_result['components']['blink_rate']:.3f} | "
+                            f"PERCLOS: {fatigue_result['components']['perclos']:.3f} | "
+                            f"Closure: {fatigue_result['components']['closure_duration']:.3f} | "
+                            f"Status: {fatigue_label}",
+                            end="",
+                            flush=True,
+                        )
+
+                else:
+                    cv2.putText(
+                        frame,
+                        "Invalid eye measurement",
+                        (30, 40),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.8,
+                        (0, 0, 255),
+                        2,
                     )
 
-            
                 # --------------------------------
                 # Fatigue Dashboard
                 # --------------------------------
@@ -581,30 +657,62 @@ def main():
                     2
                 )
 
+            else:
+                update_analysis(
+                    None,
+                    current_time,
+                    ear_values,
+                    blink_detector,
+                    perclos_tracker,
+                    temporal_analyzer,
+                    user_profile,
+                )
+                cv2.putText(
+                    frame,
+                    "Face not detected",
+                    (30, 40),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.8,
+                    (0, 0, 255),
+                    2,
+                )
 
-                # --------------------------------
-                # Complete feature window
-                # --------------------------------
+            elapsed_time = current_time - window_start_time
+            remaining_time = max(0.0, WINDOW_DURATION - elapsed_time)
+            cv2.putText(
+                frame,
+                f"Window remaining: {remaining_time:.1f}s",
+                (30, 145),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                (0, 255, 0),
+                2,
+            )
 
-                if elapsed_time >= WINDOW_DURATION:
+            if elapsed_time >= WINDOW_DURATION:
+                stats = blink_detector.get_statistics()
+                final_perclos, window_observation_time = (
+                    perclos_tracker.calculate()
+                )
+                features = calculate_features(
+                    ear_values=ear_values,
+                    blink_durations=stats["blink_durations"],
+                    perclos=final_perclos,
+                    window_duration=WINDOW_DURATION,
+                )
 
-                    stats = blink_detector.get_statistics()
-
-                    final_perclos, _ = (
-                        perclos_tracker.calculate()
+                if (
+                    features is None
+                    or len(ear_values) < 2
+                    or window_observation_time < MINIMUM_OBSERVATION_SECONDS
+                ):
+                    print(
+                        "\nFeature window discarded: fewer than "
+                        f"{MINIMUM_OBSERVATION_SECONDS:.0f} seconds of valid "
+                        "observations."
                     )
-
-
-                    features = calculate_features(
-                        ear_values=ear_values,
-                        blink_durations=stats["blink_durations"],
-                        perclos=final_perclos,
-                        window_duration=WINDOW_DURATION
-                    )
-
-
+                else:
                     print("\nFeature window completed.")
-
                     print("\nHow tired do you feel right now?")
                     print("0 - Not tired")
                     print("1 - Tired")
@@ -612,73 +720,39 @@ def main():
 
                     while True:
                         try:
-                            fatigue_label = int(
+                            self_reported_label = int(
                                 input("Enter your fatigue level (0/1/2): ")
                             )
-
-                            if fatigue_label in [0, 1, 2]:
+                            if self_reported_label in [0, 1, 2]:
                                 break
-
                             print("Please enter 0, 1, or 2.")
-
                         except ValueError:
                             print("Please enter a valid number.")
 
-
-                    features["participant_id"] = PARTICIPANT_ID
-                    features["session_id"] = SESSION_ID
-                    features["window_id"] = window_id
-                    features["fatigue_label"] = fatigue_label
-
                     save_features(
                         features,
-                        fatigue_label,
+                        self_reported_label,
                         window_id,
-                        fatigue_score=(
-                            fatigue_result["fatigue_score"]
-                            if fatigue_result is not None
-                            else None
-                        ),
-                        predicted_status=(
-                            classify_fatigue(fatigue_result["fatigue_score"])
-                            if fatigue_result is not None
-                            else "Unavailable"
-                        ),
+                        fatigue_score=window_prediction_score,
+                        predicted_status=window_predicted_status,
                     )
 
                     for name, value in features.items():
-
                         if isinstance(value, (int, float)):
-                            print(
-                                f"{name}: {value:.4f}"
-                            )
+                            print(f"{name}: {value:.4f}")
                         else:
-                            print(
-                                f"{name}: {value}"
-                            )
+                            print(f"{name}: {value}")
 
+                    print(f"\nSaved to: {DATASET_PATH}")
 
-                    print(
-                        f"\nSaved to: {DATASET_PATH}"
-                    )
-
-
-                    # Reset for next window
-                    ear_values.clear()
-
-                    blink_detector.reset_window()
-
-                    perclos_tracker.reset_window()
-
-                    temporal_analyzer = TemporalAnalyzer(
-                        window_duration=10.0,
-                        ear_threshold=EAR_THRESHOLD,
-                        long_closure_duration=0.80
-                    )
-
-                    window_id += 1
-
-                    window_start_time = time.time()
+                ear_values.clear()
+                blink_detector.reset_window()
+                perclos_tracker.reset_window()
+                temporal_analyzer.reset_window()
+                window_prediction_score = None
+                window_predicted_status = "Unavailable"
+                window_id += 1
+                window_start_time = current_time
 
 
             cv2.imshow(

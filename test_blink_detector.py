@@ -1,24 +1,24 @@
-import time
+import unittest
 
 from blink_detector import BlinkDetector
 
 
-detector = BlinkDetector()
+class BlinkDetectorTest(unittest.TestCase):
+    def test_detects_completed_blink(self):
+        detector = BlinkDetector()
 
-print("Initial:")
-print(detector.get_statistics())
+        self.assertFalse(detector.update(0.26, 0.0))
+        self.assertFalse(detector.update(0.10, 0.1))
+        self.assertTrue(detector.update(0.26, 0.25))
+        self.assertEqual(detector.get_statistics()["blink_count"], 1)
 
-# Eyes open
-detector.update(0.26)
+    def test_invalid_sample_breaks_an_open_closure(self):
+        detector = BlinkDetector()
+        detector.update(0.10, 0.0)
+        self.assertFalse(detector.update(float("nan"), 0.1))
+        self.assertFalse(detector.update(0.26, 1.0))
+        self.assertEqual(detector.get_statistics()["blink_count"], 0)
 
-# Eyes close
-detector.update(0.10)
 
-time.sleep(0.15)
-
-# Eyes open again
-blink_detected = detector.update(0.26)
-
-print("\nAfter blink:")
-print("Blink detected:", blink_detected)
-print(detector.get_statistics())
+if __name__ == "__main__":
+    unittest.main()

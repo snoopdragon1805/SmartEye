@@ -1,4 +1,7 @@
 
+import math
+
+
 class BlinkDetector:
 
     def __init__(
@@ -19,6 +22,18 @@ class BlinkDetector:
 
     def update(self, ear, current_time):
         blink_detected = False
+
+        if (
+            not isinstance(ear, (int, float))
+            or isinstance(ear, bool)
+            or not math.isfinite(ear)
+            or ear <= 0
+            or not isinstance(current_time, (int, float))
+            or isinstance(current_time, bool)
+            or not math.isfinite(current_time)
+        ):
+            self.reset_tracking()
+            return False
 
         if ear < self.ear_threshold:
 
@@ -57,3 +72,8 @@ class BlinkDetector:
     def reset_window(self):
         self.blink_count = 0
         self.blink_durations.clear()
+        self.reset_tracking()
+
+    def reset_tracking(self):
+        self.eyes_closed = False
+        self.eye_close_start = None

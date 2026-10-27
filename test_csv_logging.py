@@ -29,18 +29,27 @@ def main():
                 fatigue_score=0.72,
                 predicted_status="High",
             )
+            data_collector.save_features(
+                features,
+                fatigue_label=2,
+                current_window_id=2,
+            )
 
         with test_csv.open("r", newline="") as file:
             rows = list(csv.DictReader(file))
 
-        assert len(rows) == 1, "Expected one CSV row"
-        row = rows[0]
+        assert len(rows) == 2, "Expected two CSV rows"
+        row, unavailable_row = rows
 
         assert row["fatigue_label"] == "1"
         assert row["fatigue_score"] == "0.72"
         assert row["predicted_status"] == "High"
         assert row["prediction_available"] == "True"
         assert float(row["mean_ear"]) == 0.25
+        assert unavailable_row["fatigue_label"] == "2"
+        assert unavailable_row["fatigue_score"] == ""
+        assert unavailable_row["predicted_status"] == "Unavailable"
+        assert unavailable_row["prediction_available"] == "False"
 
         print("CSV logging test passed!")
         print("Self-reported label and predicted status are stored separately.")
