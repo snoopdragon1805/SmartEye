@@ -1,9 +1,12 @@
+from pathlib import Path
+
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 
 
 DATASET_PATH = "dataset/fatigue_data.csv"
+OUTPUT_DIRECTORY = Path("images/analysis")
 
 FEATURES = [
     "mean_ear",
@@ -38,6 +41,8 @@ print(
 # 2. Feature distributions
 # --------------------------------------------------
 
+OUTPUT_DIRECTORY.mkdir(parents=True, exist_ok=True)
+
 for feature in FEATURES:
 
     plt.figure(figsize=(8, 5))
@@ -54,10 +59,8 @@ for feature in FEATURES:
 
     plt.tight_layout()
 
-    plt.savefig(
-        f"analysis_{feature}.png",
-        dpi=150
-    )
+    output_path = OUTPUT_DIRECTORY / f"analysis_{feature}.png"
+    plt.savefig(output_path, dpi=150)
 
     plt.close()
 
@@ -81,10 +84,8 @@ plt.title("Feature Correlation")
 
 plt.tight_layout()
 
-plt.savefig(
-    "feature_correlation.png",
-    dpi=150
-)
+correlation_path = OUTPUT_DIRECTORY / "feature_correlation.png"
+plt.savefig(correlation_path, dpi=150)
 
 plt.close()
 
@@ -94,6 +95,6 @@ print("\nAnalysis complete.")
 print("\nGenerated files:")
 
 for feature in FEATURES:
-    print(f"analysis_{feature}.png")
+    print(OUTPUT_DIRECTORY / f"analysis_{feature}.png")
 
-print("feature_correlation.png")
+print(correlation_path)

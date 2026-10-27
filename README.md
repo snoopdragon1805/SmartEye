@@ -71,12 +71,17 @@ Run the camera-free unit tests with:
 python -m unittest discover -v
 ```
 
-Several older test scripts can also be run directly, for example
-`python test_calibration.py`, `python test_perclos_calculator.py`,
-`python test_temporal_analysis.py`, `python test_fatigue_scoring.py`, and
-`python test_csv_logging.py`. `python test_eye_preprocessing.py` opens the
-webcam for its interactive demo; the synthetic preprocessing test is included
-in unit-test discovery and does not require a camera.
+Tests are organized in `tests/`. The webcam-backed preprocessing demo is
+separate from unit-test discovery; run it explicitly with
+`python -m tests.test_eye_preprocessing` when a camera and the MediaPipe model
+are available. Its synthetic preprocessing test remains camera-free.
+For a simple webcam capture check without face detection, run
+`python -m tests.camera_test`.
+
+## Dataset analysis images
+
+Run `python analyze_dataset.py` from the repository root to generate feature
+distribution plots and a correlation heatmap in `images/analysis/`.
 
 The camera-backed end-to-end path is not exercised by synthetic tests; run
 `python data_collector.py` with an attached, permitted webcam to validate your
